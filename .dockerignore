@@ -1,0 +1,38 @@
+# Version control
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+
+# dbt artifacts (created at runtime; not part of the app image)
+target
+dbt_packages
+logs
+package-lock.yml
+
+# dbt sources that aren't the app (kept in repo for the dbt side)
+dags
+notebook
+models
+tests
+analyses
+macros
+seeds
+snapshots
+
+# Docs / tooling
+README.md
+MODEL_CARD.md
+LICENSE
+.dbt
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
