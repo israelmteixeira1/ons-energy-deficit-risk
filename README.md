@@ -1,8 +1,8 @@
-# Projeto ONS - dbt + Snowflake
+# ONS Energy Deficit Risk
 
 ## Visão Geral
 
-Projeto de transformação de dados utilizando dbt Core para análise e modelagem de dados do setor energético brasileiro (ONS - Operador Nacional do Sistema Elétrico).
+Classificação de risco de déficit energético para o subsistema SE do setor elétrico brasileiro (ONS - Operador Nacional do Sistema Elétrico), combinando modelagem de dados com dbt Core sobre Snowflake e um modelo de Machine Learning servido em Streamlit.
 
 ## Arquitetura
 
@@ -14,7 +14,7 @@ Projeto de transformação de dados utilizando dbt Core para análise e modelage
 
 ## Pré-requisitos
 
-- Python 3.8 ou superior
+- Python 3.9 ou superior (o dbt Core 1.10.11 exige Python >= 3.9)
 - pip (gerenciador de pacotes Python)
 - Acesso ao Snowflake com credenciais válidas
 - Git instalado
@@ -23,8 +23,8 @@ Projeto de transformação de dados utilizando dbt Core para análise e modelage
 
 ### 1. Clone o repositório
 
-git clone https://github.com/israelmteixeira1/pos-ia-mod-2.git
-cd pos-ia-mod-2
+git clone https://github.com/israelmteixeira1/ons-energy-deficit-risk.git
+cd ons-energy-deficit-risk
 
 ### 2. Crie e ative o ambiente virtual
 
@@ -112,6 +112,8 @@ All checks passed!
 - `package-lock.yml` - Lock de versões de pacotes
 - `packages.yml` - Dependências de pacotes dbt
 - `README.md` - Este arquivo
+- `MODEL_CARD.md` - Ficha do modelo (dados, features, métricas, limitações)
+- `LICENSE` - Licença MIT
 
 
 
@@ -143,7 +145,7 @@ dbt test
 
 
 
-# Projeto ONS - Machine Learning (Streamlit)
+# App — Classificador de Risco de Déficit Energético (Streamlit)
 
 ## Visão geral
 Aplicativo web em Streamlit para classificar o risco de déficit energético em três níveis (*Baixo*, *Médio*, *Alto*) usando um modelo **Random Forest** já treinado. O app:
@@ -154,7 +156,7 @@ Aplicativo web em Streamlit para classificar o risco de déficit energético em 
 
 ## Estrutura do projeto
 ```
-.
+app/
 ├─ app.py
 ├─ requirements.txt
 ├─ modelo_RandomForest.joblib
@@ -163,23 +165,25 @@ Aplicativo web em Streamlit para classificar o risco de déficit energético em 
 ```
 
 ## Pré-requisitos
-- **Python** 3.9–3.12
+- **Python** 3.11 — versão exigida pelas dependências fixadas em `app/requirements.txt`
 
 ## Instalação
 Crie um ambiente virtual e instale as dependências:
 ```bash
-python -m venv .venv
+python3.11 -m venv .venv
 # Linux/macOS
 source .venv/bin/activate
 # Windows (PowerShell)
 .venv\Scripts\Activate.ps1
 
-pip install -r requirements.txt
+pip install -r app/requirements.txt
 ```
 
 ## Execução
-Inicie o aplicativo:
+O app resolve `features.json`, `modelo_RandomForest.joblib` e `df_demo.csv` a partir do
+diretório atual — execute a partir de `app/`:
 ```bash
+cd app
 streamlit run app.py
 ```
 O navegador abrirá em `http://localhost:8501`. O painel lateral mostra o status de **carregamento do modelo**.

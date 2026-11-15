@@ -1,0 +1,24 @@
+# Dependências do app Streamlit — Classificador de Risco de Déficit Energético
+#
+# Python suportado: 3.11
+#   numpy 1.24.4 e scikit-learn 1.2.2 não publicam wheels para Python 3.12+
+#   (cp312 começa em numpy 1.26.0 e scikit-learn 1.3.1).
+#
+# scikit-learn é fixado em 1.2.2 porque o artefato app/modelo_RandomForest.joblib
+# foi serializado nessa versão: a partir do scikit-learn 1.3 a estrutura do nó
+# da árvore passa a esperar o campo `missing_go_to_left`, e o joblib.load() falha
+# com "node array from the pickle has an incompatible dtype".
+#
+# Instalação:
+#   python3.11 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r app/requirements.txt
+
+scikit-learn==1.2.2
+numpy==1.24.4
+pandas==2.0.3
+joblib==1.3.2
+streamlit==1.35.0
+altair==5.2.0
+shap==0.44.0
+xgboost==2.0.3
