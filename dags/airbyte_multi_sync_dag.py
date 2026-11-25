@@ -28,24 +28,34 @@ def trigger_airbyte_sync(connection_id):
     headers = {"Content-Type": "application/json"}
 
     # Iniciar a sincronização da conexão Airbyte
-    resp = requests.post(sync_url, json={"connectionId": connection_id}, headers=headers)
+    resp = requests.post(sync_url, json={"connectionId": connection_id}, headers=headers, timeout=30)
     resp.raise_for_status()
     job_id = resp.json()['job']['id']
 
     # Aguardar a sincronização terminar com sucesso ou falha
-    while True:
-        status_resp = requests.post(job_url, json={"id": job_id}, headers=headers)
-        status_resp.raise_for_status()
-        status = status_resp.json()['job']['status']
+    for _ in range(360):
+        try:
+            status_resp = requests.post(job_url, json={"id": job_id}, headers=headers, timeout=30)
+            status_resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Falha ao consultar conexão {connection_id}, job {job_id}; estado remoto desconhecido.") from e
+        try:
+            status = status_resp.json()['job']['status']
+            if not isinstance(status, str) or not status.strip():
+                raise ValueError("Status Airbyte inválido")
+        except (ValueError, KeyError, TypeError) as e:
+            raise RuntimeError(f"Resposta inválida ao consultar conexão {connection_id}, job {job_id}; estado remoto desconhecido.") from e
 
         if status == "succeeded":
             print(f"Conexão {connection_id} sincronizada com sucesso.")
             break
-        elif status == "failed":
-            raise Exception(f"Sincronização Airbyte para conexão {connection_id} falhou.")
+        elif status in {"failed", "cancelled", "canceled"}:
+            raise RuntimeError(f"Sincronização Airbyte para conexão {connection_id}: {status}.")
         else:
             print(f"Sincronização conexão {connection_id} status: {status}. Aguardando...")
         time.sleep(10)
+    else:
+        raise TimeoutError(f"Sincronização Airbyte {connection_id}, job {job_id}: limite de consultas excedido")
 
 
 def run_syncs():
@@ -56,7 +66,7 @@ default_args = {
     "owner": "airflow",
     "depends_on_past": False,
     "start_date": datetime(2025, 9, 25),
-    "retries": 1,
+    "retries": 0,  # Evita reiniciar jobs remotos cujo estado é desconhecido.
     "retry_delay": timedelta(minutes=5),
 }
 

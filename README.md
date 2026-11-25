@@ -20,10 +20,11 @@ termelegas, eólicas e solares cuyo déficit é função simultânea de:
 - **armazenamento** (energia armazenável e risco hídrico),
 - **clima** (precipitação, temperatura, umidade, vento).
 
-A decisão operacional (acionar térmicas contratadas, revisar intercâmbio, comunicar
-ONS/CCEE) precisa de uma **classificação de risco para D-1**, não de um modelo
-físico de ponta. Este projeto entrega essa classificação em três faixas — *Baixo*,
-*Medio*, *Alto* — com uma sugestão de playbook operacional associada.
+Este projeto é uma demonstração de **indicador experimental e não oficial** de regime
+de intercâmbio, com três faixas — *Baixo*, *Medio*, *Alto*. Não estima déficit físico,
+não reproduz classificação oficial do ONS e não deve orientar despacho, comunicação
+operacional ou outras decisões. Features com sufixo D-1 são defasadas; isso, por si só,
+não comprova disponibilidade dos dados no instante da previsão.
 
 ## Data
 
@@ -86,8 +87,8 @@ limitações e reprodutibilidade.
 | 4 | `STRESS_HIDRICO` | 0.0471 |
 | 5 | `INTERCAMBIO_MW_MEDIO_DIA_min_7d` | 0.0441 |
 
-O modelo é dominado pelo intercâmbio e pelo balanço entre geração e carga — o que
-coerentemente com a definição do risco no setor.
+As importâncias de impureza não demonstram causalidade nem validam o indicador como
+risco de déficit. O alvo foi criado a partir do próprio intercâmbio.
 
 > ⚠️ O artefato é **travado em scikit-learn 1.2.2**: a partir do 1.3 a carga do
 > `.joblib` falha por mudança no layout do nó da árvore. Use o pins de
@@ -118,18 +119,92 @@ cd app            # o app resolve features.json / modelo / CSV a partir do CWD
 streamlit run app.py
 ```
 
-### dbt
+O padrão é `df_demo.csv`, uma amostra histórica — não são dados atuais. Para outra
+entrada, defina `DEMO_CSV=/caminho/arquivo.csv` antes de iniciar; `FEATURES_JSON` e
+`MODEL_PATH` também podem ser definidos. O CSV deve conter `DATA_REFERENCIA`, `DATA`
+ou `DATE`, datas válidas em todas as linhas e `NOM_SUBSISTEMA` igual a
+`SUDESTE/CENTRO-OESTE` em todas as linhas (ignorando caixa e espaços externos).
+As 34 colunas de features já calculadas são obrigatórias; na linha de data mais
+recente, todos os valores devem ser numéricos e finitos para permitir a inferência.
+Ausências ou valores inválidos nessa linha causam erro, não são substituídos por zeros.
+Quando SHAP está disponível e o indicador é calculado, as até 1.000 linhas mais recentes
+também são verificadas: se alguma feature nesse contexto for inválida, o app mantém a
+inferência e exibe aviso, sem calcular SHAP. Linhas anteriores a esse contexto não têm
+os valores de features validados. SHAP também pode estar indisponível por outros erros.
+O app não constrói features nem verifica a disponibilidade histórica das fontes.
+
+O modelo e o manifesto de features são mantidos em cache pelo Streamlit, por caminho;
+substituir arquivos no mesmo caminho não invalida esses caches. Pare todas as instâncias
+do app, substitua modelo e manifesto como um conjunto compatível e reinicie todas as
+instâncias antes de voltar a servir requisições. A inferência exige `classes_` exatamente
+`[0, 1, 2]`, nessa ordem; outros modelos são rejeitados.
+
+Testes locais sem credenciais (incluem inferência do artefato e UI):
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+pip install pytest==8.3.5
+python -m pytest -q tests
+```
+
+### dbt
+
+Use um ambiente separado do app: as dependências transitivas de dbt/Snowflake e
+Streamlit podem entrar em conflito (por exemplo, `protobuf`).
+
+```bash
+python3.11 -m venv .venv-dbt && source .venv-dbt/bin/activate
 pip install dbt-core==1.10.11 dbt-snowflake==1.10.2
 
-mkdir -p ~/.dbt && nano ~/.dbt/profiles.yml   # ver bloco "ons_ml" no README original
+mkdir -p ~/.dbt
+# Crie ~/.dbt/profiles.yml com o exemplo abaixo e configure as variáveis em ambiente seguro.
 dbt deps
 dbt debug        # testa a conexão
 dbt run
 dbt test
 ```
+
+Exemplo de `~/.dbt/profiles.yml` (não versione credenciais):
+
+```yaml
+ons_ml:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      database: LAB_ONS
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: STAGING_ONS
+      threads: 1
+```
+
+A DAG limita cada pedido HTTP a 30 s e cada job a 360 consultas, separadas por 10 s;
+isto não é prazo total de uma hora, pois o tempo das requisições se soma. Um timeout
+não cancela o job remoto. Retries automáticos estão desativados, mas isso **não impede**
+uma execução agendada posterior, manual, de outra DAG ou pelo próprio Airbyte de
+sobrepor um job ainda ativo. Não há bloqueio distribuído nem reconciliação automática;
+não use o agendamento sem supervisão enquanto essa garantia não existir.
+
+Procedimento em falha, timeout, interrupção do worker ou estado remoto desconhecido:
+
+1. Pause imediatamente a DAG no Airflow e desabilite outros disparadores das conexões
+   envolvidas, inclusive agendamentos no Airbyte, durante a reconciliação. A pausa não
+   cancela trabalhos já iniciados; evite triggers manuais e novos reruns.
+2. Consulte no Airbyte os jobs de cada conexão, inclusive os das execuções anteriores.
+   O log informa conexão e job quando o ID foi recebido. Um timeout na requisição inicial
+   pode ter criado job sem retornar ID: nesse caso procure pelo histórico da conexão e
+   horário. Sem conseguir confirmar o estado, mantenha tudo pausado e investigue.
+3. Aguarde cada job ativo terminar ou cancele-o pelo Airbyte e confirme estado terminal;
+   confirme também que não há execuções do Airflow em andamento. Avalie o que já foi
+   sincronizado antes de reexecutar: um rerun reinicia a lista desde a primeira conexão.
+4. Só após reconciliação e garantia operacional de exclusão de outros disparadores,
+   reexecute e, quando seguro, reative o agendamento. Ausência dessa coordenação mantém
+   risco de sobreposição, inclusive após falhas futuras.
+
+O cron `0 0 */2 * *` reinicia no mês e não garante intervalos fixos de 48 horas.
 
 Comandos úteis: `dbt run --select staging.*`, `dbt run --select nome_do_modelo`,
 `dbt clean`.

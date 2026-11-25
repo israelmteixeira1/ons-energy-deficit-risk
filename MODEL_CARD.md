@@ -18,14 +18,16 @@
 
 ## Uso pretendido
 
-Classificar, para o próximo dia útil (D-1), o **nível de risco de déficit energético**
-do subsistema **SUDESTE** em três faixas — *Baixo*, *Medio*, *Alto* — a partir de
-indicadores do sistema elétrico e do clima.
+Demonstração de um **indicador experimental, não oficial**, do regime de intercâmbio
+do subsistema SUDESTE em três faixas — *Baixo*, *Medio*, *Alto*. Não é uma medida de
+déficit físico nem deve ser usado para decisões operacionais. D-1 designa defasagem de
+features; não comprova horizonte de previsão nem disponibilidade pontual das fontes.
 
-O app (`app/app.py`) lê um CSV com as colunas de entrada, alinha as 34 features
-esperadas, executa a inferência e devolve a faixa de risco com uma sugestão
-operacional (acionamento de térmicas, revisão de intercâmbio, monitoramento
-intradiário etc.).
+O app (`app/app.py`) lê um CSV de features já calculadas, verifica o manifesto de 34
+colunas e valida as features da linha mais recente antes da classificação. A validação
+adicional das até 1.000 linhas usadas em SHAP é opcional e falhas nela não impedem a
+classificação; o [contrato do CSV](README.md#app-streamlit) detalha o comportamento.
+O app não recomenda ações operacionais.
 
 **Fora do escopo:** outros subsistemas, previsão horizonte > D-1, uso em tempo real
 de operação, decisão automática de despacho, e qualquer leitura causal das features.
@@ -37,14 +39,14 @@ de operação, decisão automática de despacho, e qualquer leitura causal das f
 | Fonte energética | Snowflake `LAB_ONS.CORE_ONS` — `FATO_RISCO_ENERGETICO_DIARIO`, `FATO_BALANCO_ENERGETICO_DIARIO`, `FATO_RESERVATORIO_ENERGIA_DIARIO`, `FATO_FATOR_CAPACIDADE_DIARIO` |
 | Fonte climática | INMET (CSV), bucket S3 `csvclima01`, região `us-east-2` |
 | Subsistema | **SUDESTE** (filtro `NOM_SUBSISTEMA ILIKE '%SUDESTE%'` na query de extração) |
-| Janela temporal | `2024-01-01` → `2025-08-31` (última data com dado disponível; `CFG.END_DATE = 2025-12-12` é o limite superior configurado na query, nunca alcançado pelos dados) |
+| Janela temporal | Limites configurados `2024-01-01` → `2025-12-12`; o fim efetivo da base completa não foi verificado sem acesso às fontes |
 | Granularidade | diária |
 | Volume | **579 linhas × 51 colunas** após a engenharia de features (log do notebook: `Base consolidada: (579, 51)`) |
 
-A data final `2025-08-31` é corroborada por dois caminhos independentes: (a) `app/df_demo.csv`,
-exportado da base engineada, vai de `2025-08-29` a `2025-08-31`; (b) aritmética — 609 dias
-corridos de `2024-01-01` a `2025-08-31` (inclusive) menos os 30 dias descartados pela janela
-móvel de 30 dias (`PRECIP_SOMA_30d`) resultam em exatamente as 579 linhas do log.
+O CSV de demonstração termina em `2025-08-31`, mas é apenas uma amostra e não
+comprova o fim da base de treino. A contagem de 579 linhas tampouco o comprova:
+pressupõe dias contínuos e uma quantidade de descartes que precisa ser verificada nas
+fontes. Essas datas e a composição exata da base requerem nova auditoria.
 
 ### Rótulo (ground truth)
 
@@ -120,9 +122,20 @@ As features de calendário são residuais (`MES_cos` 0.0109, `DOW_sin` 0.0101, `
 
 Comparativo do mesmo holdout no notebook: RandomForest QWK 0.747 · XGBoost QWK 0.667.
 
-**Leitura honesta dos números:** o QWK de validação cruzada (0.593) fica bem abaixo do
-holdout (0.747) — o holdout é uma única janela de 130 dias e é otimista. O número de
-cross-validation é a estimativa mais confiável para operação contínua.
+**Leitura honesta dos números:** o QWK de validação cruzada (0.593) fica abaixo do
+holdout (0.747), mas nenhum dos dois valida operação contínua. Os quantis de corte do
+alvo foram calculados sobre toda a base antes do split temporal (células 3 e 6), usando
+informação de períodos futuros para definir rótulos anteriores. Isso contamina a avaliação;
+a direção e a magnitude do viés não foram medidas. A seleção do último fold com todas as
+classes também usa informação do período de avaliação. O resultado não é uma estimativa
+independente da capacidade de prever déficit.
+
+Para um estudo futuro, definir um alvo e horizonte operacionalmente verificáveis,
+congelar os limiares usando apenas dados disponíveis no treino de cada fold, auditar a
+latência e o alinhamento temporal de todas as features e reservar período final intocado.
+Retreinar, recalibrar e comparar com baselines simples antes de qualquer uso. Essas
+etapas não foram executadas aqui; alterar a definição do alvo altera o problema e exige
+novo modelo e nova validação.
 
 Ressalva adicional: a célula de comparação do notebook avaliou
 `RandomForest(n_estimators=900, max_depth=6)`, enquanto o artefato publicado carrega os

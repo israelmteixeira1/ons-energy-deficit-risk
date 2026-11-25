@@ -1,5 +1,5 @@
 # ---------------------------------------------
-# Classificador de Risco de Déficit Energético 
+# Classificador de Risco de Déficit Energético
 # ---------------------------------------------
 
 import os
@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import joblib
-import altair as alt  
+import altair as alt
 
 try:
     import shap
@@ -17,9 +17,9 @@ try:
 except Exception:
     HAS_SHAP = False
 
-FEATURES_JSON = os.environ.get("FEATURES_JSON", "features.json")            
-MODEL_PATH    = os.environ.get("MODEL_PATH", "modelo_RandomForest.joblib")  
-DEMO_CSV      = os.environ.get("DEMO_CSV", "df_demo.csv")    
+FEATURES_JSON = os.environ.get("FEATURES_JSON", "features.json")
+MODEL_PATH    = os.environ.get("MODEL_PATH", "modelo_RandomForest.joblib")
+DEMO_CSV      = os.environ.get("DEMO_CSV", "df_demo.csv")
 
 
 ORD_MAP   = {"Baixo": 0, "Medio": 1, "Alto": 2}
@@ -34,13 +34,16 @@ def load_features_list(path: str = FEATURES_JSON) -> list:
 
 def align_and_sanitize(df: pd.DataFrame, feats: list) -> pd.DataFrame:
     X = df.copy()
-    for c in feats:
-        if c not in X.columns:
-            X[c] = 0.0
+    missing = [c for c in feats if c not in X.columns]
+    if missing:
+        raise ValueError(f"Features missing: {', '.join(missing)}")
     X = X[feats]
     for c in X.columns:
         X[c] = pd.to_numeric(X[c], errors="coerce")
-    X = X.replace([np.inf, -np.inf], np.nan).fillna(0.0).astype("float64")
+    invalid = ~np.isfinite(X.to_numpy(dtype="float64"))
+    if invalid.any():
+        raise ValueError("Valores invalid nas features: " + ", ".join(X.columns[invalid.any(axis=0)]))
+    X = X.astype("float64")
     return X
 
 @st.cache_resource
@@ -48,7 +51,9 @@ def load_model(path: str = MODEL_PATH):
     return joblib.load(path)
 
 def local_inference(instances: list) -> dict:
-    model = load_model()
+    model = load_model(MODEL_PATH)
+    if not np.array_equal(getattr(model, "classes_", None), [0, 1, 2]):
+        raise ValueError("classes_ incompatíveis: esperado [0, 1, 2].")
     X = pd.DataFrame(instances)
 
     t0 = time.time()
@@ -90,23 +95,16 @@ def format_output(raw: dict) -> pd.DataFrame:
 def risk_badge(label: str) -> str:
     return {"Baixo": "✅", "Medio": "🟨", "Alto": "🟥"}.get(label, "❔")
 
-def playbook(p_b: float, p_m: float, p_a: float) -> str:
-    if p_a >= 0.60:
-        return "Acionar térmicas contratadas; revisar intercâmbio SE/CO; informar ONS/CCEE; plano de contingência de carga."
-    if p_m >= 0.60:
-        return "Reforçar monitoramento intradiário; reavaliar MRE/PLD; preparar despacho adicional; atenção a reservatórios."
-    return "Operação normal. Manter monitoramento e atualização diária de dados."
-
-
 st.set_page_config(page_title="Classificador de Risco Energético", layout="wide")
-st.title("🔌 Classificação de Risco de Déficit Energético")
+st.title("Indicador experimental de regime de intercâmbio")
+st.warning("Indicador experimental, não oficial: não usar para despacho ou decisão operacional.")
 
 st.sidebar.markdown("### Configuração")
 st.sidebar.write(f"**Arquivo do modelo:** `{MODEL_PATH}`")
 
 model_loaded = False
 try:
-    _ = load_model()
+    _ = load_model(MODEL_PATH)
     st.sidebar.success("Modelo carregado com sucesso.")
     model_loaded = True
 except Exception as e:
@@ -118,27 +116,22 @@ except Exception as e:
     )
 
 try:
-    feats = load_features_list()
-except Exception:
-    feats = []
+    feats = load_features_list(FEATURES_JSON)
+    if len(feats) != 34 or len(set(feats)) != 34:
+        raise ValueError("Esperadas 34 features distintas.")
+    if model_loaded and feats != list(load_model(MODEL_PATH).feature_names_in_):
+        raise ValueError("Manifesto incompatível com as features do modelo.")
+except Exception as e:
+    st.error(f"Erro no manifesto de features: {e}")
+    st.stop()
 
-
-from datetime import datetime
-import glob
 
 def pick_csv_file() -> str | None:
-    demo = "df_demo.csv"
-    if os.path.exists(demo):
-        return demo
-    files = [f for f in glob.glob("*.csv") if os.path.isfile(f)]
-    if not files:
-        return None
-    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return files[0]
+    return DEMO_CSV if os.path.isfile(DEMO_CSV) else None
 
 csv_path = pick_csv_file()
 if csv_path is None:
-    st.error("Não encontrei nenhum CSV na pasta do app (esperava `df_demo.csv` ou algum `*.csv`).")
+    st.error("Não encontrei o CSV configurado em DEMO_CSV.")
     st.stop()
 
 try:
@@ -153,30 +146,50 @@ for c in df_in.columns:
         dt_col = c
         break
 
+if df_in.empty:
+    st.error("CSV sem dados.")
+    st.stop()
+
 if dt_col:
     df_in[dt_col] = pd.to_datetime(df_in[dt_col], errors="coerce")
+    if df_in[dt_col].isna().any():
+        st.error("Data ausente ou inválida no CSV.")
+        st.stop()
     df_in = df_in.sort_values(dt_col).reset_index(drop=True)
-    df_aug = df_in[df_in[dt_col].dt.month == 8].copy()
-    target_row = df_aug.iloc[[-1]] if len(df_aug) > 0 else df_in.iloc[[-1]]
-else:
     target_row = df_in.iloc[[-1]]
+else:
+    st.error("Coluna de data obrigatória: DATA_REFERENCIA, DATA ou DATE.")
+    st.stop()
+
+if ("NOM_SUBSISTEMA" not in df_in.columns or
+        not df_in["NOM_SUBSISTEMA"].fillna("").astype(str).str.strip().str.upper().eq("SUDESTE/CENTRO-OESTE").all()):
+    st.error("Subsistema ausente ou fora do escopo: esperado SUDESTE/CENTRO-OESTE (SE) em todas as linhas.")
+    st.stop()
 
 drop_cols = [c for c in ["NIVEL_RISCO_CATEGORIA", "SCORE_RISCO_NUMERICO", dt_col] if c and c in target_row.columns]
-X_aligned = align_and_sanitize(target_row.drop(columns=drop_cols, errors="ignore"), feats)
+try:
+    X_aligned = align_and_sanitize(target_row.drop(columns=drop_cols, errors="ignore"), feats)
+except ValueError as e:
+    st.error(str(e))
+    st.stop()
 
-if st.button("▶️ Prever com base em D-1", type="primary"):
+if st.button("▶️ Calcular indicador", type="primary"):
     if not model_loaded:
         st.error("Modelo não carregado.")
     else:
-        with st.spinner("Inferindo..."):
-            raw = local_inference(X_aligned.to_dict(orient="records"))
+        try:
+            with st.spinner("Inferindo..."):
+                raw = local_inference(X_aligned.to_dict(orient="records"))
+        except ValueError as e:
+            st.error(f"Inferência indisponível: {e}")
+            st.stop()
         out = format_output(raw)
 
         display_out = out.copy()
         for c in ["p_Baixo", "p_Medio", "p_Alto", "pred"]:
             if c in display_out.columns:
                 display_out.drop(columns=c, inplace=True)
-        display_out.rename(columns={"label": "Risco Predito"}, inplace=True)
+        display_out.rename(columns={"label": "Faixa estimada"}, inplace=True)
         if dt_col:
             display_out.insert(0, dt_col, target_row[dt_col].reset_index(drop=True))
         if "NOM_SUBSISTEMA" in target_row.columns:
@@ -187,54 +200,52 @@ if st.button("▶️ Prever com base em D-1", type="primary"):
 
         label = str(out.loc[0, "label"])
         badge = risk_badge(label)
-        st.markdown(f"### {badge} Risco **{label}**")
-
-        pvals = out.loc[0, ["p_Baixo","p_Medio","p_Alto"]] if {"p_Baixo","p_Medio","p_Alto"}.issubset(out.columns) else None
-        if pvals is not None:
-            msg = playbook(float(pvals['p_Baixo']), float(pvals['p_Medio']), float(pvals['p_Alto']))
-            st.info(f"**Sugestão operacional:** {msg}")
+        st.markdown(f"### {badge} Faixa **{label}**")
 
         if HAS_SHAP and len(df_in) > 0:
-            model = load_model()
-            ctx_global = df_in.tail(1000).copy()
-            Xg = align_and_sanitize(
-                ctx_global.drop(columns=[c for c in ["NIVEL_RISCO_CATEGORIA","SCORE_RISCO_NUMERICO", dt_col] if c in ctx_global], errors="ignore"),
-                feats
-            )
             try:
-                explainer = shap.TreeExplainer(model)
-            except Exception:
-                explainer = shap.Explainer(model)
-            sv = explainer(Xg)
-            if isinstance(sv, list):
-                arr = np.stack([s.values for s in sv], axis=-1)  # [n,f,C]
-                mean_abs = np.abs(arr).mean(axis=(0,2))
-            else:
-                arr = sv.values
-                if arr.ndim == 3:
+                model = load_model(MODEL_PATH)
+                ctx_global = df_in.tail(1000).copy()
+                Xg = align_and_sanitize(
+                    ctx_global.drop(columns=[c for c in ["NIVEL_RISCO_CATEGORIA","SCORE_RISCO_NUMERICO", dt_col] if c in ctx_global], errors="ignore"),
+                    feats
+                )
+                try:
+                    explainer = shap.TreeExplainer(model)
+                except Exception:
+                    explainer = shap.Explainer(model)
+                sv = explainer(Xg)
+                if isinstance(sv, list):
+                    arr = np.stack([s.values for s in sv], axis=-1)  # [n,f,C]
                     mean_abs = np.abs(arr).mean(axis=(0,2))
                 else:
-                    mean_abs = np.abs(arr).mean(axis=0)
-            k = min(10, Xg.shape[1])
-            top_idx = np.argsort(mean_abs)[::-1][:k]  # do maior para o menor
-            df_imp = pd.DataFrame({
-                "feature": Xg.columns[top_idx],
-                "importance": mean_abs[top_idx]
-            }).sort_values("importance", ascending=False)
+                    arr = sv.values
+                    if arr.ndim == 3:
+                        mean_abs = np.abs(arr).mean(axis=(0,2))
+                    else:
+                        mean_abs = np.abs(arr).mean(axis=0)
+                k = min(10, Xg.shape[1])
+                top_idx = np.argsort(mean_abs)[::-1][:k]  # do maior para o menor
+                df_imp = pd.DataFrame({
+                    "feature": Xg.columns[top_idx],
+                    "importance": mean_abs[top_idx]
+                }).sort_values("importance", ascending=False)
 
-            chart = (
-                alt.Chart(df_imp)
-                .mark_bar()
-                .encode(
-                    x=alt.X("importance:Q", title="|SHAP| médio (global)"),
-                    y=alt.Y("feature:N", sort="-x", title=None),  # ordena maior→menor
-                    tooltip=[alt.Tooltip("feature:N", title="feature"),
-                             alt.Tooltip("importance:Q", format=".4f", title="|SHAP|")]
+                chart = (
+                    alt.Chart(df_imp)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("importance:Q", title="|SHAP| médio (global)"),
+                        y=alt.Y("feature:N", sort="-x", title=None),  # ordena maior→menor
+                        tooltip=[alt.Tooltip("feature:N", title="feature"),
+                                 alt.Tooltip("importance:Q", format=".4f", title="|SHAP|")]
+                    )
+                    .properties(height=max(200, 24 * k), width="container")
                 )
-                .properties(height=max(200, 24 * k), width="container")
-            )
-            st.subheader("Principais fatores (Top-10 |SHAP| global)")
-            st.altair_chart(chart, use_container_width=True)
+                st.subheader("Principais fatores (Top-10 |SHAP| global)")
+                st.altair_chart(chart, use_container_width=True)
+            except Exception as e:
+                st.warning(f"SHAP indisponível: {e}")
 
         st.session_state["_last_X"] = X_aligned
         st.session_state["_last_out"] = out
